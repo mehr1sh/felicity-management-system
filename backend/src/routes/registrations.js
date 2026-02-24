@@ -32,14 +32,9 @@ router.post("/normal/:eventId", requireAuth, requireRole("participant"), async (
     const existing = await Registration.findOne({ participantId: req.auth.userId, eventId: event._id });
     if (existing) return res.status(409).json({ error: "Already registered" });
 
-    const schema = z.object({
-      formResponse: z.preprocess(
-        (val) => (val && typeof val === "object" && !Array.isArray(val) ? val : {}),
-        z.record(z.any())
-      ),
-    });
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    // Extract formResponse manually (avoids Zod v4 record/preprocess issues)
+    const formResponse = (req.body.formResponse && typeof req.body.formResponse === "object" && !Array.isArray(req.body.formResponse))
+      ? req.body.formResponse : {};
 
     // Generate ticket
     const ticketId = generateTicketId();
@@ -53,7 +48,7 @@ router.post("/normal/:eventId", requireAuth, requireRole("participant"), async (
       eventId: event._id,
       eventType: "normal",
       status: "registered",
-      formResponse: parsed.data.formResponse || {},
+      formResponse,
     });
 
     // Update event stats safely
@@ -90,75 +85,82 @@ router.post("/normal/:eventId", requireAuth, requireRole("participant"), async (
 
 // Purchase merchandise
 router.post("/merchandise/:eventId", requireAuth, requireRole("participant"), async (req, res) => {
-  const event = await Event.findById(req.params.eventId);
-  if (!event) return res.status(404).json({ error: "Event not found" });
-  if (event.eventType !== "merchandise") return res.status(400).json({ error: "Not a merchandise event" });
+  try {
+    const event = await Event.findById(req.params.eventId);
+    if (!event) return res.status(404).json({ error: "Event not found" });
+    if (event.eventType !== "merchandise") return res.status(400).json({ error: "Not a merchandise event" });
 
-  if (event.status !== "published" && event.status !== "ongoing") {
-    return res.status(400).json({ error: "Event not open for purchase" });
+    if (event.status !== "published" && event.status !== "ongoing") {
+      return res.status(400).json({ error: "Event not open for purchase" });
+    }
+    if (new Date() > new Date(event.registrationDeadline)) {
+      return res.status(400).json({ error: "Purchase deadline passed" });
+    }
+
+    // Validate fields manually (avoids Zod v4 record/preprocess issues)
+    const itemName = req.body.itemName;
+    const quantity = Number(req.body.quantity);
+    const variantSelection = (req.body.variantSelection && typeof req.body.variantSelection === "object" && !Array.isArray(req.body.variantSelection))
+      ? req.body.variantSelection : {};
+
+    if (!itemName || typeof itemName !== "string") return res.status(400).json({ error: "itemName is required" });
+    if (!quantity || quantity < 1 || quantity > 10) return res.status(400).json({ error: "quantity must be between 1 and 10" });
+
+    // Find item and check stock
+    const item = event.merchItems.find((m) => m.itemName === itemName);
+    if (!item) return res.status(404).json({ error: "Item not found" });
+
+    // Check purchase limit
+    const userPurchases = await Registration.countDocuments({
+      participantId: req.auth.userId,
+      eventId: event._id,
+      "purchase.itemName": itemName,
+      status: "registered",
+    });
+    if (userPurchases >= item.purchaseLimitPerParticipant) {
+      return res.status(400).json({ error: "Purchase limit reached for this item" });
+    }
+
+    // Check stock
+    if (item.stockQty < quantity) {
+      return res.status(400).json({ error: "Insufficient stock" });
+    }
+
+    // Create order WITHOUT QR – QR is only generated on payment approval
+    const ticketId = generateTicketId("MRCH");
+
+    const registration = await Registration.create({
+      ticketId,
+      participantId: req.auth.userId,
+      eventId: event._id,
+      eventType: "merchandise",
+      status: "registered",
+      purchase: {
+        itemName,
+        variantSelection,
+        quantity,
+        paymentStatus: "pending_approval",
+      },
+    });
+
+    // Send pending acknowledgement email (non-blocking)
+    try {
+      const participant = await Participant.findById(req.auth.userId);
+      await sendMail({
+        smtp: config.smtp,
+        to: participant.email,
+        subject: `Order Placed: ${event.eventName}`,
+        text: `Your order for ${event.eventName} has been placed.\n\nOrder ID: ${ticketId}\nItem: ${itemName}\nQuantity: ${quantity}\n\nPlease upload your payment proof to complete the order. A ticket QR code will be sent upon approval.`,
+      });
+    } catch (emailErr) {
+      console.warn("[email] Merch order email failed:", emailErr.message);
+    }
+
+    return res.status(201).json({ registration });
+  } catch (err) {
+    console.error("[merch-purchase] Error:", err);
+    return res.status(500).json({ error: "Purchase failed. Please try again." });
   }
-  if (new Date() > new Date(event.registrationDeadline)) {
-    return res.status(400).json({ error: "Purchase deadline passed" });
-  }
-
-  const schema = z.object({
-    itemName: z.string().min(1),
-    variantSelection: z.preprocess(
-      (val) => (val && typeof val === "object" && !Array.isArray(val) ? val : {}),
-      z.record(z.string())
-    ),
-    quantity: z.number().min(1).max(10),
-  });
-  const parsed = schema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-
-  // Find item and check stock
-  const item = event.merchItems.find((m) => m.itemName === parsed.data.itemName);
-  if (!item) return res.status(404).json({ error: "Item not found" });
-
-  // Check purchase limit
-  const userPurchases = await Registration.countDocuments({
-    participantId: req.auth.userId,
-    eventId: event._id,
-    "purchase.itemName": parsed.data.itemName,
-    status: "registered",
-  });
-  if (userPurchases >= item.purchaseLimitPerParticipant) {
-    return res.status(400).json({ error: "Purchase limit reached for this item" });
-  }
-
-  // Check stock
-  if (item.stockQty < parsed.data.quantity) {
-    return res.status(400).json({ error: "Insufficient stock" });
-  }
-
-  // Create order WITHOUT QR – QR is only generated on payment approval
-  const ticketId = generateTicketId("MRCH");
-
-  const registration = await Registration.create({
-    ticketId,
-    participantId: req.auth.userId,
-    eventId: event._id,
-    eventType: "merchandise",
-    status: "registered",
-    purchase: {
-      itemName: parsed.data.itemName,
-      variantSelection: parsed.data.variantSelection,
-      quantity: parsed.data.quantity,
-      paymentStatus: "pending_approval",
-    },
-  });
-
-  // Send pending acknowledgement email WITHOUT QR
-  const participant = await Participant.findById(req.auth.userId);
-  await sendMail({
-    smtp: config.smtp,
-    to: participant.email,
-    subject: `Order Placed: ${event.eventName}`,
-    text: `Your order for ${event.eventName} has been placed.\n\nOrder ID: ${ticketId}\nItem: ${parsed.data.itemName}\nQuantity: ${parsed.data.quantity}\n\nPlease upload your payment proof to complete the order. A ticket QR code will be sent upon approval.`,
-  });
-
-  return res.status(201).json({ registration });
 });
 
 // Register for hackathon (team event)
@@ -186,12 +188,13 @@ router.post("/hackathon/:eventId", requireAuth, requireRole("participant"), asyn
     const minSize = event.minTeamSize || 1;
     const maxSize = event.maxTeamSize || 4;
 
-    const schema = z.object({
-      teamMembers: z.array(z.string().min(1)).min(minSize, `Team must have at least ${minSize} members`).max(maxSize, `Team cannot exceed ${maxSize} members`),
-      formResponse: z.record(z.any()).optional(),
-    });
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    // Validate and extract manually (avoids Zod v4 record/preprocess issues)
+    const teamMembers = Array.isArray(req.body.teamMembers) ? req.body.teamMembers.filter(m => typeof m === "string" && m.trim()) : [];
+    const formResponse = (req.body.formResponse && typeof req.body.formResponse === "object" && !Array.isArray(req.body.formResponse))
+      ? req.body.formResponse : {};
+
+    if (teamMembers.length < minSize) return res.status(400).json({ error: `Team must have at least ${minSize} members` });
+    if (teamMembers.length > maxSize) return res.status(400).json({ error: `Team cannot exceed ${maxSize} members` });
 
     const ticketId = generateTicketId("HACK");
     const qrPayload = { ticketId, participantId: String(req.auth.userId), eventId: String(event._id) };
@@ -204,8 +207,8 @@ router.post("/hackathon/:eventId", requireAuth, requireRole("participant"), asyn
       eventId: event._id,
       eventType: "hackathon",
       status: "registered",
-      teamMembers: parsed.data.teamMembers,
-      formResponse: parsed.data.formResponse || {},
+      teamMembers,
+      formResponse,
     });
 
     if (!event.stats) event.stats = {};
