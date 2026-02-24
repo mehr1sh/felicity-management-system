@@ -182,7 +182,7 @@ router.get("/trending", async (req, res) => {
       },
     },
     { $sort: { count: -1 } },
-    { $limit: 20 }, 
+    { $limit: 20 },
   ]);
 
   let eventIds = regCounts.map((r) => r._id);
@@ -276,7 +276,6 @@ router.post("/:id/publish", requireAuth, requireRole("organizer"), async (req, r
   const organizer = await Organizer.findById(req.auth.userId);
   if (organizer && organizer.discordWebhookUrl) {
     try {
-      const fetch = require("node-fetch");
       await fetch(organizer.discordWebhookUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

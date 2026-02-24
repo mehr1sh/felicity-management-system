@@ -148,7 +148,6 @@ router.post("/:id/discord/test", requireAuth, async (req, res) => {
   }
 
   try {
-    const fetch = require("node-fetch");
     const resp = await fetch(organizer.discordWebhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
