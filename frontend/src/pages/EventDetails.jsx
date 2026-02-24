@@ -53,9 +53,8 @@ export function EventDetails() {
         enrichedForm[fieldId] = base64;
       }
       await api.post(`/registrations/normal/${id}`, { formResponse: enrichedForm });
-      setSuccess("Registration successful! Check your email for the ticket.");
-      checkMyRegistration();
-      loadEvent();
+      setSuccess("Registration successful! Your ticket QR has been sent to your email.");
+      setTimeout(() => { checkMyRegistration(); loadEvent(); }, 2500);
     } catch (err) {
       setError(err.response?.data?.error || "Registration failed");
     }
@@ -80,8 +79,7 @@ export function EventDetails() {
         quantity,
       });
       setSuccess("Order placed! Upload payment proof to confirm.");
-      checkMyRegistration();
-      loadEvent();
+      setTimeout(() => { checkMyRegistration(); loadEvent(); }, 2500);
     } catch (err) {
       setError(err.response?.data?.error || "Purchase failed");
     }
@@ -105,9 +103,8 @@ export function EventDetails() {
         enrichedForm[fieldId] = base64;
       }
       await api.post(`/registrations/hackathon/${id}`, { teamMembers: validMembers, formResponse: enrichedForm });
-      setSuccess("Hackathon registration successful! Check your email for the ticket.");
-      await checkMyRegistration();
-      await loadEvent();
+      setSuccess("Hackathon registration successful! Your ticket QR has been sent to your email.");
+      setTimeout(() => { checkMyRegistration(); loadEvent(); }, 2500);
     } catch (err) {
       setError(err.response?.data?.error || "Registration failed. Please try again.");
     }
