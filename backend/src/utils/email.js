@@ -1,48 +1,39 @@
-const nodemailer = require("nodemailer");
-const dns = require("dns");
-const { promisify } = require("util");
+const { Resend } = require("resend");
 
-const resolve4 = promisify(dns.resolve4);
+// Initialize Resend if API key is provided
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
-function isSmtpConfigured(smtp) {
-  return Boolean(smtp.host && smtp.port && smtp.user && smtp.pass);
+function isSmtpConfigured() {
+  return Boolean(resend);
 }
 
-async function sendMail({ smtp, to, subject, text, attachments }) {
-  if (!isSmtpConfigured(smtp)) {
+async function sendMail({ to, subject, text, attachments }) {
+  if (!isSmtpConfigured()) {
     console.log("[email:dev]", { to, subject, text, hasAttachments: !!attachments });
     return { messageId: "dev-log" };
   }
 
-  // Force IPv4 by pre-resolving the host — Render free tier doesn't support IPv6
-  let smtpHost = smtp.host;
   try {
-    const addresses = await resolve4(smtp.host);
-    if (addresses && addresses.length > 0) {
-      smtpHost = addresses[0];
-      console.log(`[email] Resolved ${smtp.host} -> ${smtpHost} (IPv4)`);
+    const payload = {
+      from: process.env.SMTP_FROM || "Felicity EMS <onboarding@resend.dev>",
+      to,
+      subject,
+      text,
+    };
+
+    if (attachments && attachments.length > 0) {
+      payload.attachments = attachments.map(a => ({
+        filename: a.filename,
+        content: a.content || Buffer.from(a.content, a.encoding).toString('base64'),
+      }));
     }
-  } catch (dnsErr) {
-    console.warn("[email] DNS resolve4 failed, using hostname:", dnsErr.message);
+
+    const data = await resend.emails.send(payload);
+    return data;
+  } catch (err) {
+    console.error("[email] Resend API error:", err);
+    throw err;
   }
-
-  const transporter = nodemailer.createTransport({
-    host: smtpHost,
-    port: smtp.port,
-    secure: smtp.port === 465,
-    auth: { user: smtp.user, pass: smtp.pass },
-    connectionTimeout: 10000,
-    socketTimeout: 10000,
-    greetingTimeout: 10000,
-  });
-
-  return await transporter.sendMail({
-    from: smtp.from,
-    to,
-    subject,
-    text,
-    attachments,
-  });
 }
 
 module.exports = { sendMail };
