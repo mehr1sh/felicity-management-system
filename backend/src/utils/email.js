@@ -15,6 +15,10 @@ async function sendMail({ smtp, to, subject, text, attachments }) {
     port: smtp.port,
     secure: smtp.port === 465,
     auth: { user: smtp.user, pass: smtp.pass },
+    connectionTimeout: 5000,
+    socketTimeout: 5000,
+    greetingTimeout: 5000,
+    family: 4,  // Force IPv4 — Render free tier doesn't support IPv6
   });
 
   return await transporter.sendMail({
@@ -27,4 +31,3 @@ async function sendMail({ smtp, to, subject, text, attachments }) {
 }
 
 module.exports = { sendMail };
-
