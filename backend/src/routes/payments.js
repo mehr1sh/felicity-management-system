@@ -98,13 +98,17 @@ router.post("/:registrationId/approve", requireAuth, requireRole("organizer"), a
     const base64Data = registration.qrDataUrl.split(',')[1];
     if (base64Data) attachments.push({ filename: `ticket-${registration.ticketId}.png`, content: base64Data, encoding: 'base64' });
   }
-  await sendMail({
-    smtp: config.smtp,
-    to: participant.email,
-    subject: `Purchase Approved: ${event.eventName}`,
-    text: `Your payment for ${event.eventName} has been approved!\n\nTicket ID: ${registration.ticketId}\nItem: ${registration.purchase.itemName}\nQuantity: ${registration.purchase.quantity}\n\nPlease find your QR code ticket attached.`,
-    attachments,
-  });
+  try {
+    await sendMail({
+      smtp: config.smtp,
+      to: participant.email,
+      subject: `Purchase Approved: ${event.eventName}`,
+      text: `Your payment for ${event.eventName} has been approved!\n\nTicket ID: ${registration.ticketId}\nItem: ${registration.purchase.itemName}\nQuantity: ${registration.purchase.quantity}\n\nPlease find your QR code ticket attached.`,
+      attachments,
+    });
+  } catch (emailErr) {
+    console.warn("[email] Payment approval email failed:", emailErr.message);
+  }
 
   return res.json({ ok: true });
 });

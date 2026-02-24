@@ -227,7 +227,7 @@ router.post("/hackathon/:eventId", requireAuth, requireRole("participant"), asyn
         smtp: config.smtp,
         to: participant.email,
         subject: `Hackathon Registration Confirmed: ${event.eventName}`,
-        text: `Your hackathon registration for ${event.eventName} is confirmed.\n\nTicket ID: ${ticketId}\nTeam Members: ${parsed.data.teamMembers.join(", ")}\n\nPlease find your Ticket QR Code attached.`,
+        text: `Your hackathon registration for ${event.eventName} is confirmed.\n\nTicket ID: ${ticketId}\nTeam Members: ${teamMembers.join(", ")}\n\nPlease find your Ticket QR Code attached.`,
         attachments,
       });
     } catch (emailErr) {
