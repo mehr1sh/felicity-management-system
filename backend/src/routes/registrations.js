@@ -12,79 +12,80 @@ const router = express.Router();
 
 // Register for normal event
 router.post("/normal/:eventId", requireAuth, requireRole("participant"), async (req, res) => {
-  const event = await Event.findById(req.params.eventId);
-  if (!event) return res.status(404).json({ error: "Event not found" });
-  if (event.eventType !== "normal") return res.status(400).json({ error: "Not a normal event" });
+  try {
+    const event = await Event.findById(req.params.eventId);
+    if (!event) return res.status(404).json({ error: "Event not found" });
+    if (event.eventType !== "normal") return res.status(400).json({ error: "Not a normal event" });
 
-  // Validation checks
-  if (event.status !== "published" && event.status !== "ongoing") {
-    return res.status(400).json({ error: "Event not open for registration" });
-  }
-  if (new Date() > new Date(event.registrationDeadline)) {
-    return res.status(400).json({ error: "Registration deadline passed" });
-  }
-
-  const regCount = await Registration.countDocuments({ eventId: event._id, status: "registered" });
-  if (regCount >= event.registrationLimit) {
-    return res.status(400).json({ error: "Registration limit reached" });
-  }
-
-  // Check if already registered
-  const existing = await Registration.findOne({ participantId: req.auth.userId, eventId: event._id });
-  if (existing) return res.status(409).json({ error: "Already registered" });
-
-  const schema = z.object({
-    formResponse: z.record(z.any()).optional(),
-  });
-  const parsed = schema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-
-  // Generate ticket
-  const ticketId = generateTicketId();
-  const qrPayload = { ticketId, participantId: String(req.auth.userId), eventId: String(event._id) };
-  const qrDataUrl = await generateQrDataUrl(qrPayload);
-
-  const registration = await Registration.create({
-    ticketId,
-    qrDataUrl,
-    participantId: req.auth.userId,
-    eventId: event._id,
-    eventType: "normal",
-    status: "registered",
-    formResponse: parsed.data.formResponse || {},
-  });
-
-  // Update event stats safely
-  if (!event.stats) event.stats = {};
-  event.stats.registrationsCount = (event.stats.registrationsCount || 0) + 1;
-  event.stats.revenue = (event.stats.revenue || 0) + (event.registrationFee || 0);
-  await event.save();
-
-  // Send email
-  const participant = await Participant.findById(req.auth.userId);
-
-  // Extract base64 part of qrDataUrl if present
-  let attachments = [];
-  if (qrDataUrl) {
-    const base64Data = qrDataUrl.split(',')[1];
-    if (base64Data) {
-      attachments.push({
-        filename: `ticket-${ticketId}.png`,
-        content: base64Data,
-        encoding: 'base64'
-      });
+    if (event.status !== "published" && event.status !== "ongoing") {
+      return res.status(400).json({ error: "Event not open for registration" });
     }
+    if (new Date() > new Date(event.registrationDeadline)) {
+      return res.status(400).json({ error: "Registration deadline passed" });
+    }
+
+    const regCount = await Registration.countDocuments({ eventId: event._id, status: "registered" });
+    if (regCount >= event.registrationLimit) {
+      return res.status(400).json({ error: "Registration limit reached" });
+    }
+
+    const existing = await Registration.findOne({ participantId: req.auth.userId, eventId: event._id });
+    if (existing) return res.status(409).json({ error: "Already registered" });
+
+    const schema = z.object({
+      formResponse: z.preprocess(
+        (val) => (val && typeof val === "object" && !Array.isArray(val) ? val : {}),
+        z.record(z.any())
+      ),
+    });
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+
+    // Generate ticket
+    const ticketId = generateTicketId();
+    const qrPayload = { ticketId, participantId: String(req.auth.userId), eventId: String(event._id) };
+    const qrDataUrl = await generateQrDataUrl(qrPayload);
+
+    const registration = await Registration.create({
+      ticketId,
+      qrDataUrl,
+      participantId: req.auth.userId,
+      eventId: event._id,
+      eventType: "normal",
+      status: "registered",
+      formResponse: parsed.data.formResponse || {},
+    });
+
+    // Update event stats safely
+    if (!event.stats) event.stats = {};
+    event.stats.registrationsCount = (event.stats.registrationsCount || 0) + 1;
+    event.stats.revenue = (event.stats.revenue || 0) + (event.registrationFee || 0);
+    await event.save();
+
+    // Send email (non-blocking)
+    try {
+      const participant = await Participant.findById(req.auth.userId);
+      let attachments = [];
+      if (qrDataUrl) {
+        const base64Data = qrDataUrl.split(',')[1];
+        if (base64Data) attachments.push({ filename: `ticket-${ticketId}.png`, content: base64Data, encoding: 'base64' });
+      }
+      await sendMail({
+        smtp: config.smtp,
+        to: participant.email,
+        subject: `Registration Confirmed: ${event.eventName}`,
+        text: `Your registration for ${event.eventName} is confirmed.\n\nTicket ID: ${ticketId}\n\nEvent Details:\n${event.eventDescription}\n\nStart: ${event.eventStartDate}\nEnd: ${event.eventEndDate}\n\nPlease find your Ticket QR Code attached to this email.`,
+        attachments,
+      });
+    } catch (emailErr) {
+      console.warn("[email] Registration email failed:", emailErr.message);
+    }
+
+    return res.status(201).json({ registration });
+  } catch (err) {
+    console.error("[normal-register] Error:", err);
+    return res.status(500).json({ error: "Registration failed. Please try again." });
   }
-
-  await sendMail({
-    smtp: config.smtp,
-    to: participant.email,
-    subject: `Registration Confirmed: ${event.eventName}`,
-    text: `Your registration for ${event.eventName} is confirmed.\n\nTicket ID: ${ticketId}\n\nEvent Details:\n${event.eventDescription}\n\nStart: ${event.eventStartDate}\nEnd: ${event.eventEndDate}\n\nPlease find your Ticket QR Code attached to this email.`,
-    attachments,
-  });
-
-  return res.status(201).json({ registration });
 });
 
 // Purchase merchandise
