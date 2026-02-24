@@ -1,0 +1,3 @@
+Frontend URL: https://felicity-management-system-smoky.vercel.app
+Backend API URL: https://felicity-management-system-vldj.onrender.com/api
+Database: MongoDB Atlas (felicity-ems)
